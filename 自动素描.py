@@ -14,7 +14,7 @@ class AutoSketchApp:
     def __init__(self, root):
         self.root = root
         self.root.title("杀戮尖塔2 自动素描机器人")
-        self.root.geometry("500x760") 
+        self.root.geometry("500x780") 
         self.root.resizable(False, False)
         self.root.attributes("-topmost", True)
 
@@ -48,19 +48,32 @@ class AutoSketchApp:
         self.preview_label = ttk.Label(img_frame, text="等待上传图片...", foreground="gray")
         self.preview_label.pack()
 
+        # 使用 grid 布局使其更整齐
         detail_frame = ttk.Frame(img_frame)
         detail_frame.pack(fill="x", padx=10, pady=5)
-        ttk.Label(detail_frame, text="线条细节(阈值):").pack(side="left")
+        
+        # 1. 线条细节阈值
+        ttk.Label(detail_frame, text="线条细节(阈值):").grid(row=0, column=0, sticky="w", pady=2)
         self.threshold_var = tk.IntVar(value=100)
-
         thresh_spin = ttk.Spinbox(detail_frame, from_=10, to=200, textvariable=self.threshold_var, width=5,
                                   command=self.update_preview)
-        thresh_spin.pack(side="right", padx=(0, 5))
+        thresh_spin.grid(row=0, column=2, padx=(0, 5))
         thresh_spin.bind('<Return>', self.update_preview)
-
         thresh_scale = ttk.Scale(detail_frame, from_=10, to=200, variable=self.threshold_var, orient="horizontal")
-        thresh_scale.pack(side="left", fill="x", expand=True, padx=5)
+        thresh_scale.grid(row=0, column=1, sticky="ew", padx=5)
         thresh_scale.bind("<ButtonRelease-1>", self.update_preview)
+
+        # ★ 2. 过滤短线 (解决微小飞线和局部模糊的终极武器)
+        ttk.Label(detail_frame, text="过滤短线(防噪点):").grid(row=1, column=0, sticky="w", pady=2)
+        self.min_len_var = tk.IntVar(value=10) # 默认过滤长度小于10的灰尘
+        minlen_spin = ttk.Spinbox(detail_frame, from_=0, to=100, textvariable=self.min_len_var, width=5, command=self.update_preview)
+        minlen_spin.grid(row=1, column=2, padx=(0, 5))
+        minlen_spin.bind('<Return>', self.update_preview)
+        minlen_scale = ttk.Scale(detail_frame, from_=0, to=100, variable=self.min_len_var, orient="horizontal")
+        minlen_scale.grid(row=1, column=1, sticky="ew", padx=5)
+        minlen_scale.bind("<ButtonRelease-1>", self.update_preview)
+        
+        detail_frame.columnconfigure(1, weight=1)
 
         # --- 第二部分：绘图区域设置 (红框参数) ---
         area_frame = ttk.LabelFrame(self.root, text=" 绘制区域 (红框范围 %) ")
@@ -91,7 +104,7 @@ class AutoSketchApp:
         ttk.Spinbox(draw_frame, from_=1, to=50, textvariable=self.drag_step_var, width=8).grid(row=0, column=1)
 
         ttk.Label(draw_frame, text="起落笔延迟 (秒):").grid(row=1, column=0, padx=10, pady=5, sticky="e")
-        self.delay_var = tk.DoubleVar(value=0.00)
+        self.delay_var = tk.DoubleVar(value=0.01) # 默认设为0.01
         ttk.Spinbox(draw_frame, from_=0.00, to=0.2, increment=0.01, textvariable=self.delay_var, width=8).grid(row=1, column=1)
 
         ttk.Label(draw_frame, text="使用按键:").grid(row=0, column=2, padx=10, pady=5, sticky="e")
@@ -132,9 +145,16 @@ class AutoSketchApp:
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
         raw_contours = []
+        min_len = self.min_len_var.get()
+        
         for c in contours:
-            epsilon = 0.002 * cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, epsilon, False)
+            # ★ 修复1：丢弃肉眼看不见的噪点碎屑，防止疯狂原地跳跃导致飞线
+            if cv2.arcLength(c, True) < min_len:
+                continue
+                
+            # ★ 修复2：彻底抛弃动态比例压缩！强制以 1.0 像素的最高精度还原曲线。
+            # 这解决了嘴部被画成僵硬多边形、甚至多出一个圈的“低模Bug”。
+            approx = cv2.approxPolyDP(c, 1.0, False)
             if len(approx) > 1:
                 raw_contours.append(approx)
 
@@ -177,7 +197,7 @@ class AutoSketchApp:
 
         self.canvas.delete("all")
         self.canvas.create_image(150, 100, anchor="center", image=self.tk_img)
-        self.preview_label.config(text=f"解析完成：优化并提取 {len(self.contours)} 条路径段")
+        self.preview_label.config(text=f"解析完成：高质量提取 {len(self.contours)} 条路径段")
 
     def on_hotkey_start(self):
         if not self.is_running and self.contours:
@@ -221,7 +241,11 @@ class AutoSketchApp:
         offset_y = box_y + (box_h - draw_h) / 2
 
         step_px = max(1, self.drag_step_var.get())
-        delay = max(0.00, self.delay_var.get())
+        
+        # ★ 强制底层保底延迟机制：
+        # 无论界面设置多低，底层都会保障至少 0.015 秒（约1帧）的延迟。
+        # 这是为了 100% 确保游戏引擎能抓取到鼠标已经抬起，防止物理粘连飞线。
+        delay = max(0.015, self.delay_var.get())
         mouse_btn = self.btn_var.get()
 
         self.global_offset_x = 0
@@ -231,7 +255,6 @@ class AutoSketchApp:
             if not self.is_paused:
                 return True, 0, 0
 
-            # 记录旧的全局偏移量，用于计算本次增量
             old_gx = self.global_offset_x
             old_gy = self.global_offset_y
 
@@ -240,8 +263,8 @@ class AutoSketchApp:
             # --- 1. 暂停前：截取中心区域锚点 ---
             if self.auto_align_var.get():
                 self.root.after(0, lambda: self.status_label.config(text="正在保存地图锚点快照...", foreground="purple"))
-                # 缩小截图面积至35%，避免边缘UI和视差背景干扰
-                aw, ah = int(box_w * 0.35), int(box_h * 0.35)
+                # ★ 修复3：扩大快照取样面积至 50%，增加特征点，防止认错坐标。
+                aw, ah = int(box_w * 0.50), int(box_h * 0.50)
                 ax, ay = int(box_x + (box_w - aw) / 2), int(box_y + (box_h - ah) / 2)
                 anchor_img = pyautogui.screenshot(region=(ax, ay, aw, ah))
                 anchor_cv = cv2.cvtColor(np.array(anchor_img), cv2.COLOR_RGB2BGR)
@@ -257,19 +280,18 @@ class AutoSketchApp:
             if self.stop_requested:
                 return False, 0, 0
 
-            # --- 3. 恢复时：大范围地毯式扫描 + 物理精准拖拽纠偏 ---
+            # --- 3. 恢复时：物理精准拖拽纠偏 ---
             if self.auto_align_var.get():
                 self.root.after(0, lambda: self.status_label.config(text="正在大范围扫描寻找对齐点...", foreground="orange"))
                 found = False
                 
-                # 阶段 A: 寻回地图。加大每次滚动的幅度(800)，进行大规模上下探查
                 scroll_sweeps = [0] + [800] * 5 + [-800] * 10 + [800] * 5
                 for sc in scroll_sweeps:
                     if self.stop_requested: break
                     if sc != 0:
                         pyautogui.moveTo(box_x + box_w / 2, box_y + box_h / 2)
                         pyautogui.scroll(sc)
-                        time.sleep(0.4) # 等地图滚动稳定
+                        time.sleep(0.4)
 
                     screen_img = pyautogui.screenshot(region=(int(box_x), int(box_y), int(box_w), int(box_h)))
                     screen_cv = cv2.cvtColor(np.array(screen_img), cv2.COLOR_RGB2BGR)
@@ -277,31 +299,31 @@ class AutoSketchApp:
                     res = cv2.matchTemplate(screen_cv, anchor_cv, cv2.TM_CCOEFF_NORMED)
                     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
                     
-                    if max_val > 0.65: # 找到了！
+                    # ★ 修复4：将匹配阈值从 0.65 史诗级拉高到 0.80！
+                    # 宁愿找不到，也绝对不能找错位置画重影。
+                    if max_val > 0.80: 
                         found = True
                         break
                         
-                # 阶段 B: 物理精准拖拽。利用鼠标左键把地图硬拽回绝对中心！
                 if found:
                     self.root.after(0, lambda: self.status_label.config(text="目标已锁定，正在物理精准拖拽...", foreground="orange"))
                     dx, dy = 0, 0
-                    for _ in range(5): # 最多进行5次微调拖拽
+                    for _ in range(5):
                         if self.stop_requested: break
                         screen_img = pyautogui.screenshot(region=(int(box_x), int(box_y), int(box_w), int(box_h)))
                         screen_cv = cv2.cvtColor(np.array(screen_img), cv2.COLOR_RGB2BGR)
                         res = cv2.matchTemplate(screen_cv, anchor_cv, cv2.TM_CCOEFF_NORMED)
                         _, max_val, _, max_loc = cv2.minMaxLoc(res)
                         
-                        if max_val < 0.5: break # 意外丢失
+                        if max_val < 0.5: break 
                             
                         dx = max_loc[0] - old_rel_x
                         dy = max_loc[1] - old_rel_y
                         
                         if abs(dx) <= 2 and abs(dy) <= 2:
-                            dx, dy = 0, 0 # 完美对齐
+                            dx, dy = 0, 0 
                             break
                             
-                        # 核心：反向物理拖动地图以消除位移
                         pyautogui.moveTo(box_x + box_w / 2, box_y + box_h / 2)
                         pyautogui.mouseDown(button='left')
                         time.sleep(0.05)
@@ -310,7 +332,6 @@ class AutoSketchApp:
                         pyautogui.mouseUp(button='left')
                         time.sleep(0.3) 
                         
-                    # 把物理拖拽解决不了的极限残余微小误差，通过数学偏移补偿
                     self.global_offset_x += dx
                     self.global_offset_y += dy
                 else:
@@ -318,7 +339,6 @@ class AutoSketchApp:
             
             self.root.after(0, lambda: self.status_label.config(text="正在作画中! (F8暂停 | F10停止)", foreground="red"))
             
-            # 计算本次纠偏产生的坐标变化增量
             delta_x = self.global_offset_x - old_gx
             delta_y = self.global_offset_y - old_gy
 
@@ -378,7 +398,6 @@ class AutoSketchApp:
                             ok, d_x, d_y = check_pause(int(nx), int(ny), True)
                             if not ok: break
                             
-                            # 如果中途发生了纠偏增量，立刻接轨同步给当前计算坐标
                             if d_x != 0 or d_y != 0:
                                 screen_x += d_x
                                 screen_y += d_y
