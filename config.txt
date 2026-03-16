@@ -15,7 +15,7 @@ min_len = 10
 # 游戏红框避开的百分比 (0-50)
 left_margin = 16
 right_margin = 19
-top_margin = 10
+top_margin = 9
 bottom_margin = 7
 
 [绘制参数]

@@ -132,6 +132,9 @@ class AutoSketchApp:
         self.bottom_margin = tk.IntVar(value=7)
         ttk.Spinbox(area_frame, from_=0, to=50, textvariable=self.bottom_margin, width=5).grid(row=1, column=3)
 
+        # ★ 新增：框选屏幕区域的截取按钮
+        ttk.Button(area_frame, text="✂️ 手动框选作画区域", command=self.start_area_selection).grid(row=2, column=0, columnspan=4, pady=(10, 5))
+
         # --- 第三部分：绘制参数 ---
         draw_frame = ttk.LabelFrame(self.content_frame, text=" 绘制参数 (防乱线设置) ")
         draw_frame.pack(fill="x", padx=15, pady=5)
@@ -150,6 +153,9 @@ class AutoSketchApp:
 
         self.auto_align_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(draw_frame, text="暂停恢复时自动寻找并物理对齐地图", variable=self.auto_align_var).grid(row=2, column=0, columnspan=2, padx=10, pady=5, sticky="w")
+
+        # ★ 新增：全局配置保存按钮
+        ttk.Button(self.content_frame, text="💾 保存当前所有设置至配置文件", command=self.save_all_to_config).pack(pady=(15, 0))
 
         # --- 状态与控制 ---
         ttk.Label(self.content_frame, text="F9: 开始 | F8: 暂停/继续 | F10: 停止", foreground="red",
@@ -228,6 +234,102 @@ auto_align = True
                 f.write(default_content)
         except Exception as e:
             print(f"创建配置文件失败: {e}")
+
+    # ★ 修改：将原先的自动保存改为手动全局保存，并覆盖所有参数
+    def save_all_to_config(self):
+        if not os.path.exists(self.config_file):
+            self.create_default_config()
+        try:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                for line in lines:
+                    if line.startswith('threshold ='): f.write(f"threshold = {self.threshold_var.get()}\n")
+                    elif line.startswith('min_len ='): f.write(f"min_len = {self.min_len_var.get()}\n")
+                    elif line.startswith('left_margin ='): f.write(f"left_margin = {self.left_margin.get()}\n")
+                    elif line.startswith('right_margin ='): f.write(f"right_margin = {self.right_margin.get()}\n")
+                    elif line.startswith('top_margin ='): f.write(f"top_margin = {self.top_margin.get()}\n")
+                    elif line.startswith('bottom_margin ='): f.write(f"bottom_margin = {self.bottom_margin.get()}\n")
+                    elif line.startswith('drag_step ='): f.write(f"drag_step = {self.drag_step_var.get()}\n")
+                    elif line.startswith('delay ='): f.write(f"delay = {self.delay_var.get()}\n")
+                    elif line.startswith('mouse_btn ='): f.write(f"mouse_btn = {self.btn_var.get()}\n")
+                    elif line.startswith('auto_align ='): f.write(f"auto_align = {self.auto_align_var.get()}\n")
+                    else: f.write(line)
+            messagebox.showinfo("保存成功", "当前所有的参数设置已成功保存至 config.txt！\n下次启动将默认使用此配置。")
+        except Exception as e:
+            messagebox.showerror("保存失败", f"保存配置失败: {e}")
+
+    # ★ 新增核心功能：半透明全屏框选截图器
+    def start_area_selection(self):
+        # 隐藏主窗口，避免遮挡玩家视线
+        self.root.withdraw()
+        time.sleep(0.2)  # 给系统一点时间隐藏窗口
+
+        self.overlay = tk.Toplevel()
+        self.overlay.attributes('-fullscreen', True)
+        self.overlay.attributes('-alpha', 0.4) # 设置半透明暗角效果
+        self.overlay.attributes('-topmost', True)
+        self.overlay.config(bg='black', cursor="crosshair") # 准星鼠标
+
+        self.overlay_canvas = tk.Canvas(self.overlay, bg="black", highlightthickness=0)
+        self.overlay_canvas.pack(fill="both", expand=True)
+
+        self.sel_rect = None
+        self.start_x = 0
+        self.start_y = 0
+
+        # 绑定鼠标拖拽事件和退出事件
+        self.overlay_canvas.bind("<ButtonPress-1>", self.on_selection_start)
+        self.overlay_canvas.bind("<B1-Motion>", self.on_selection_drag)
+        self.overlay_canvas.bind("<ButtonRelease-1>", self.on_selection_end)
+        self.overlay.bind("<Escape>", self.cancel_selection)   # 按ESC取消
+        self.overlay.bind("<Button-3>", self.cancel_selection) # 右键也能取消
+
+    def cancel_selection(self, event=None):
+        self.overlay.destroy()
+        self.root.deiconify() # 恢复显示主窗口
+
+    def on_selection_start(self, event):
+        self.start_x = event.x
+        self.start_y = event.y
+        if self.sel_rect:
+            self.overlay_canvas.delete(self.sel_rect)
+        self.sel_rect = self.overlay_canvas.create_rectangle(
+            self.start_x, self.start_y, self.start_x, self.start_y, outline="red", width=3)
+
+    def on_selection_drag(self, event):
+        self.overlay_canvas.coords(self.sel_rect, self.start_x, self.start_y, event.x, event.y)
+
+    def on_selection_end(self, event):
+        end_x, end_y = event.x, event.y
+        screen_w = self.overlay.winfo_width()
+        screen_h = self.overlay.winfo_height()
+
+        self.overlay.destroy()
+        self.root.deiconify() # 恢复显示主窗口
+
+        x1, x2 = min(self.start_x, end_x), max(self.start_x, end_x)
+        y1, y2 = min(self.start_y, end_y), max(self.start_y, end_y)
+
+        # 限制框选范围不能太小（防止不小心点了一下误触）
+        if x2 - x1 < 50 or y2 - y1 < 50:
+            messagebox.showwarning("提示", "框选范围太小，已取消修改。")
+            return
+
+        # 根据绝对像素点，智能逆推四个方向的百分比
+        left_pct = int((x1 / screen_w) * 100)
+        right_pct = int(((screen_w - x2) / screen_w) * 100)
+        top_pct = int((y1 / screen_h) * 100)
+        bottom_pct = int(((screen_h - y2) / screen_h) * 100)
+
+        # 安全限制在 0 - 50 之间，填入 UI
+        self.left_margin.set(max(0, min(50, left_pct)))
+        self.right_margin.set(max(0, min(50, right_pct)))
+        self.top_margin.set(max(0, min(50, top_pct)))
+        self.bottom_margin.set(max(0, min(50, bottom_pct)))
+
+        # ★ 取消了自动保存，仅提示更新成功
+        messagebox.showinfo("提示", "绘制区域已更新！\n（如需永久保留此设置，请点击主界面底部的“保存”按钮）")
 
     def load_image(self):
         file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp")])
