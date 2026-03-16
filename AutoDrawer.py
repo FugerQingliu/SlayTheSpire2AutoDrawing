@@ -7,8 +7,10 @@ import time
 import cv2
 import numpy as np
 import math
-import os            # ★ 新增导入 os 库，用于检测文件
-import configparser  # ★ 新增导入 configparser，用于解析 txt 配置文件
+import os            
+import configparser  
+import ctypes        # ★ 新增：用于检测和请求系统管理员权限
+import sys           # ★ 新增：用于重启并提权当前脚本
 from PIL import Image, ImageTk
 
 
@@ -631,6 +633,19 @@ auto_align = True
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = AutoSketchApp(root)
-    root.mainloop()
+    # ★ 新增：启动时自动检测并请求管理员权限
+    def is_admin():
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin()
+        except:
+            return False
+
+    if is_admin():
+        # 如果已经是管理员权限，正常启动UI主程序
+        root = tk.Tk()
+        app = AutoSketchApp(root)
+        root.mainloop()
+    else:
+        # 如果不是管理员，强制拉起系统的 UAC 弹窗请求管理员权限，并重新运行自己
+        ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
+        sys.exit()
