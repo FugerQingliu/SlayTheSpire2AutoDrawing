@@ -9,12 +9,12 @@ min_len = 10
 [绘制区域]
 left_margin = 16
 right_margin = 19
-top_margin = 9
+top_margin = 10
 bottom_margin = 7
 
 [绘制参数]
 drag_step = 5
-delay = 0.02
+delay = 0.01
 mouse_btn = right
 auto_align = True
 

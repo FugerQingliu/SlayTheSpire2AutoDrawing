@@ -423,6 +423,90 @@ mist_scroll = {self.mist_scroll_var.get()}
         painted_nodes = []
         global_screen_y = 0  
 
+        # ★ 新增：迷雾战场专属的暂停与物理对齐检查函数
+        def check_mist_pause(resume_x=None, resume_y=None, resume_down=False):
+            if not self.is_paused:
+                return True
+
+            pyautogui.mouseUp(button=btn)
+
+            if self.auto_align_var.get():
+                self.root.after(0, lambda: self.status_label.config(text="正在保存地图锚点快照...", foreground="purple"))
+                aw, ah = int(box_w * 0.50), int(box_h * 0.50)
+                ax, ay = int(box_x + (box_w - aw) / 2), int(box_y + (box_h - ah) / 2)
+                anchor_img = pyautogui.screenshot(region=(ax, ay, aw, ah))
+                anchor_cv = cv2.cvtColor(np.array(anchor_img), cv2.COLOR_RGB2BGR)
+                old_rel_x = ax - box_x
+                old_rel_y = ay - box_y
+
+            self.root.after(0, lambda: self.status_label.config(text="迷雾战场: 已暂停 (按F8继续)", foreground="purple"))
+            
+            while self.is_paused and not self.stop_requested:
+                time.sleep(0.1)
+                
+            if self.stop_requested:
+                return False
+
+            if self.auto_align_var.get():
+                self.root.after(0, lambda: self.status_label.config(text="正在大范围扫描寻找对齐点...", foreground="orange"))
+                found = False
+                
+                scroll_sweeps = [0] + [800] * 5 + [-800] * 10 + [800] * 5
+                for sc in scroll_sweeps:
+                    if self.stop_requested: break
+                    if sc != 0:
+                        pyautogui.moveTo(box_x + box_w / 2, box_y + box_h / 2)
+                        pyautogui.scroll(sc)
+                        time.sleep(0.4)
+
+                    screen_img = pyautogui.screenshot(region=(int(box_x), int(box_y), int(box_w), int(box_h)))
+                    screen_cv = cv2.cvtColor(np.array(screen_img), cv2.COLOR_RGB2BGR)
+                    
+                    res = cv2.matchTemplate(screen_cv, anchor_cv, cv2.TM_CCOEFF_NORMED)
+                    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+                    
+                    if max_val > 0.80: 
+                        found = True
+                        break
+                        
+                if found:
+                    self.root.after(0, lambda: self.status_label.config(text="目标已锁定，正在物理精准拖拽...", foreground="orange"))
+                    for _ in range(5):
+                        if self.stop_requested: break
+                        screen_img = pyautogui.screenshot(region=(int(box_x), int(box_y), int(box_w), int(box_h)))
+                        screen_cv = cv2.cvtColor(np.array(screen_img), cv2.COLOR_RGB2BGR)
+                        res = cv2.matchTemplate(screen_cv, anchor_cv, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                        
+                        if max_val < 0.5: break 
+                            
+                        dx = max_loc[0] - old_rel_x
+                        dy = max_loc[1] - old_rel_y
+                        
+                        if abs(dx) <= 2 and abs(dy) <= 2:
+                            break
+                            
+                        pyautogui.moveTo(box_x + box_w / 2, box_y + box_h / 2)
+                        pyautogui.mouseDown(button='left')
+                        time.sleep(0.05)
+                        pyautogui.move(-dx, -dy, duration=0.2)
+                        time.sleep(0.05)
+                        pyautogui.mouseUp(button='left')
+                        time.sleep(0.3) 
+                else:
+                    self.root.after(0, lambda: messagebox.showwarning("对齐失败", "未能找回原位置，迷雾涂抹可能会出现少许遗漏！"))
+
+            self.root.after(0, lambda: self.status_label.config(text="迷雾战场: 正在全屏极致遮盖...", foreground="red"))
+            
+            if resume_x is not None and resume_y is not None:
+                pyautogui.moveTo(resume_x, resume_y, duration=0.01)
+                time.sleep(delay)
+                if resume_down:
+                    pyautogui.mouseDown(button=btn)
+                    time.sleep(delay)
+                    
+            return True
+
         self.root.after(0, lambda: self.status_label.config(text="正在获取焦点并导航至顶端...", foreground="orange"))
         
         pyautogui.click(box_x + box_w/2, box_y + box_h/2, button='right')
@@ -431,6 +515,7 @@ mist_scroll = {self.mist_scroll_var.get()}
         # 狂暴上滚确保登顶
         for _ in range(40):
             if self.stop_requested: return
+            if not check_mist_pause(): return # ★ 检查暂停
             pyautogui.scroll(800)
             time.sleep(0.05)
         time.sleep(0.5) 
@@ -457,6 +542,8 @@ mist_scroll = {self.mist_scroll_var.get()}
 
             for c in contours:
                 if self.stop_requested: break
+                if not check_mist_pause(): break # ★ 检查暂停
+                
                 x, y, w, h = cv2.boundingRect(c)
                 area = cv2.contourArea(c)
                 
@@ -508,6 +595,8 @@ mist_scroll = {self.mist_scroll_var.get()}
                                     py = target_y + r * math.sin(theta)
                                     
                                     if self.stop_requested: break
+                                    if not check_mist_pause(px, py, True): break # ★ 检查画圈过程中的暂停
+                                    
                                     pyautogui.moveTo(px, py)
                                     
                                     time.sleep(0.001) 
@@ -520,12 +609,15 @@ mist_scroll = {self.mist_scroll_var.get()}
                                 time.sleep(delay)
 
         # 初始满屏全盘扫描
-        screen_img = pyautogui.screenshot(region=(int(box_x), int(box_y), int(box_w), int(box_h)))
-        screen_cv = cv2.cvtColor(np.array(screen_img), cv2.COLOR_RGB2BGR)
-        scan_and_paint(screen_cv, is_end=False)
+        if check_mist_pause(): # ★ 检查开局暂停
+            screen_img = pyautogui.screenshot(region=(int(box_x), int(box_y), int(box_w), int(box_h)))
+            screen_cv = cv2.cvtColor(np.array(screen_img), cv2.COLOR_RGB2BGR)
+            scan_and_paint(screen_cv, is_end=False)
 
         # 边滚边扫，直至侦测到底部边界
         while not self.stop_requested:
+            if not check_mist_pause(): break # ★ 检查滚动间隔的暂停
+            
             anchor_h = int(box_h * 0.4)
             anchor_y = int(box_y + box_h - anchor_h)
             anchor_img = pyautogui.screenshot(region=(int(box_x), anchor_y, int(box_w), anchor_h))
@@ -562,7 +654,6 @@ mist_scroll = {self.mist_scroll_var.get()}
         pyautogui.mouseUp(button=btn)
         self.root.after(0, lambda: self.status_label.config(text="迷雾战场：极致无缝涂抹完毕！", foreground="green"))
         self.root.after(2000, self.reset_ui)
-
 
     # ==========================================
     # 常规素描核心功能区
