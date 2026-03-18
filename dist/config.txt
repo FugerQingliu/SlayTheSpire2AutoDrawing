@@ -1,0 +1,30 @@
+# ==========================================
+# 杀戮尖塔2自动素描机器人 - 本地配置文件
+# ==========================================
+
+[线条设置]
+threshold = 100
+min_len = 10
+
+[绘制区域]
+left_margin = 16
+right_margin = 19
+top_margin = 9
+bottom_margin = 7
+
+[绘制参数]
+drag_step = 5
+delay = 0.02
+mouse_btn = right
+auto_align = True
+[快捷键]
+start = F9
+pause = F8
+stop = F10
+
+
+[迷雾设置]
+mist_margin = 40
+mist_spacing = 3
+mist_step = 20
+mist_scroll = 1200

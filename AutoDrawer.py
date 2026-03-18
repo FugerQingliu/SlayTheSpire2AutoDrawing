@@ -29,13 +29,16 @@ class AutoSketchApp:
         self.contours = []
         self.image_size = (0, 0)
         self.config_file = "config.txt"  
+        self.hotkey_handles = {}
+        self.hotkey_current = {"start": "F9", "pause": "F8", "stop": "F10"}
+        self.hotkey_capture_target = None
+        self.hotkey_capture_backup = None
 
         self.setup_ui()
         self.load_config()               
 
-        keyboard.add_hotkey('F9', self.on_hotkey_start)
-        keyboard.add_hotkey('F8', self.on_hotkey_pause)  
-        keyboard.add_hotkey('F10', self.on_hotkey_stop)
+        self.apply_hotkeys()
+        self.root.bind("<KeyPress>", self.on_capture_keypress, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def setup_ui(self):
@@ -157,6 +160,28 @@ class AutoSketchApp:
         self.mist_scroll_var = tk.IntVar(value=1200)
         ttk.Spinbox(mist_frame, from_=500, to=3000, increment=100, textvariable=self.mist_scroll_var, width=8).grid(row=3, column=1)
 
+        # --- ????? ---
+        hotkey_frame = ttk.LabelFrame(self.content_frame, text=" 快捷键设置 ")
+        hotkey_frame.pack(fill="x", padx=15, pady=5)
+        hotkey_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(hotkey_frame, text="开始:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+        self.hotkey_start_var = tk.StringVar(value="F9")
+        ttk.Entry(hotkey_frame, textvariable=self.hotkey_start_var, width=12, state="readonly").grid(row=0, column=1, padx=(0, 10), pady=5, sticky="w")
+        ttk.Button(hotkey_frame, text="修改", command=lambda: self.start_hotkey_capture("start")).grid(row=0, column=2, padx=(0, 10), pady=5, sticky="w")
+
+        ttk.Label(hotkey_frame, text="暂停/继续:").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+        self.hotkey_pause_var = tk.StringVar(value="F8")
+        ttk.Entry(hotkey_frame, textvariable=self.hotkey_pause_var, width=12, state="readonly").grid(row=1, column=1, padx=(0, 10), pady=5, sticky="w")
+        ttk.Button(hotkey_frame, text="修改", command=lambda: self.start_hotkey_capture("pause")).grid(row=1, column=2, padx=(0, 10), pady=5, sticky="w")
+
+        ttk.Label(hotkey_frame, text="停止:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        self.hotkey_stop_var = tk.StringVar(value="F10")
+        ttk.Entry(hotkey_frame, textvariable=self.hotkey_stop_var, width=12, state="readonly").grid(row=2, column=1, padx=(0, 10), pady=5, sticky="w")
+        ttk.Button(hotkey_frame, text="修改", command=lambda: self.start_hotkey_capture("stop")).grid(row=2, column=2, padx=(0, 10), pady=5, sticky="w")
+
+        ttk.Label(hotkey_frame, text="点击“修改”后直接按键，Esc 取消", foreground="gray").grid(row=3, column=0, columnspan=3, padx=10, pady=(0, 5), sticky="w")
+
         # ★ 独立功能区 - 迷雾战场
         mist_btn = ttk.Button(self.content_frame, text="🌫️ 迷雾战场 (全自动探索并涂抹图标)", command=self.on_btn_mist)
         mist_btn.pack(pady=(15, 0))
@@ -164,11 +189,169 @@ class AutoSketchApp:
         ttk.Button(self.content_frame, text="💾 保存当前所有设置至配置文件", command=self.save_all_to_config).pack(pady=(10, 0))
 
         # --- 状态与控制 ---
-        ttk.Label(self.content_frame, text="F9: 开始素描 | F8: 暂停/继续 | F10: 停止", foreground="red",
-                  font=("Microsoft YaHei", 10, "bold")).pack(pady=10)
+        self.hotkey_hint_label = ttk.Label(self.content_frame, text=self.get_hotkey_hint_text(), foreground="red",
+                                           font=("Microsoft YaHei", 10, "bold"))
+        self.hotkey_hint_label.pack(pady=10)
         self.status_label = ttk.Label(self.content_frame, text="当前状态: 待机中...", font=("Microsoft YaHei", 11, "bold"),
                                       foreground="blue")
         self.status_label.pack(pady=5)
+
+    def get_hotkey_hint_text(self):
+        start = self.hotkey_current.get("start", "F9")
+        pause = self.hotkey_current.get("pause", "F8")
+        stop = self.hotkey_current.get("stop", "F10")
+        return f"{start}: 开始素描 | {pause}: 暂停/继续 | {stop}: 停止"
+
+    def update_hotkey_label(self):
+        if hasattr(self, "hotkey_hint_label"):
+            self.hotkey_hint_label.config(text=self.get_hotkey_hint_text())
+
+    def _hk(self, key, fallback):
+        return self.hotkey_current.get(key, fallback)
+
+    def _normalize_hotkey(self, value, default):
+        text = (value or "").strip()
+        return text if text else default
+
+    def _event_to_hotkey(self, event):
+        key = (event.keysym or "").lower()
+        if not key:
+            return None
+        if key in {"shift_l", "shift_r", "control_l", "control_r", "alt_l", "alt_r"}:
+            return None
+
+        alias = {
+            "return": "enter",
+            "prior": "page up",
+            "next": "page down",
+            "caps_lock": "caps lock",
+            "num_lock": "num lock",
+            "scroll_lock": "scroll lock",
+            "print": "print screen",
+        }
+
+        key_name = alias.get(key, key)
+        modifiers = []
+        if event.state & 0x0004:
+            modifiers.append("ctrl")
+        if event.state & 0x0008:
+            modifiers.append("alt")
+        if event.state & 0x0001:
+            modifiers.append("shift")
+
+        return "+".join(modifiers + [key_name])
+
+    def start_hotkey_capture(self, target):
+        if self.hotkey_capture_target is not None:
+            return
+
+        self.hotkey_capture_target = target
+        self.hotkey_capture_backup = {
+            "start": self.hotkey_start_var.get(),
+            "pause": self.hotkey_pause_var.get(),
+            "stop": self.hotkey_stop_var.get(),
+            "current": dict(self.hotkey_current),
+        }
+
+        self._clear_hotkeys()
+        labels = {"start": "开始", "pause": "暂停/继续", "stop": "停止"}
+        self.status_label.config(
+            text=f"正在设置“{labels.get(target, target)}”快捷键：请按键（Esc 取消）",
+            foreground="purple"
+        )
+        self.root.focus_force()
+
+    def on_capture_keypress(self, event):
+        if self.hotkey_capture_target is None:
+            return None
+
+        key = (event.keysym or "").lower()
+        if key in {"escape", "esc"}:
+            self.cancel_hotkey_capture()
+            return "break"
+
+        hotkey = self._event_to_hotkey(event)
+        if not hotkey:
+            return "break"
+
+        target = self.hotkey_capture_target
+        target_var = {
+            "start": self.hotkey_start_var,
+            "pause": self.hotkey_pause_var,
+            "stop": self.hotkey_stop_var,
+        }[target]
+        target_var.set(hotkey)
+
+        applied = self.apply_hotkeys()
+        self.hotkey_capture_target = None
+        self.hotkey_capture_backup = None
+        if applied:
+            self.status_label.config(text=f"快捷键已更新：{self.get_hotkey_hint_text()}", foreground="green")
+        return "break"
+
+    def cancel_hotkey_capture(self):
+        if self.hotkey_capture_target is None or not self.hotkey_capture_backup:
+            return
+
+        backup = self.hotkey_capture_backup
+        self.hotkey_start_var.set(backup["start"])
+        self.hotkey_pause_var.set(backup["pause"])
+        self.hotkey_stop_var.set(backup["stop"])
+        old = backup["current"]
+        self._set_hotkeys(old.get("start", "F9"), old.get("pause", "F8"), old.get("stop", "F10"))
+
+        self.hotkey_capture_target = None
+        self.hotkey_capture_backup = None
+        self.status_label.config(text="已取消快捷键修改", foreground="blue")
+
+    def _clear_hotkeys(self):
+        for handle in getattr(self, "hotkey_handles", {}).values():
+            try:
+                keyboard.remove_hotkey(handle)
+            except Exception:
+                pass
+        self.hotkey_handles = {}
+
+    def _reset_hotkey_vars(self, values):
+        self.hotkey_start_var.set(values["start"])
+        self.hotkey_pause_var.set(values["pause"])
+        self.hotkey_stop_var.set(values["stop"])
+
+    def _set_hotkeys(self, start, pause, stop):
+        self._clear_hotkeys()
+        try:
+            h_start = keyboard.add_hotkey(start, self.on_hotkey_start)
+            h_pause = keyboard.add_hotkey(pause, self.on_hotkey_pause)
+            h_stop = keyboard.add_hotkey(stop, self.on_hotkey_stop)
+        except Exception as e:
+            self._clear_hotkeys()
+            return False, e
+
+        self.hotkey_handles = {"start": h_start, "pause": h_pause, "stop": h_stop}
+        self.hotkey_current = {"start": start, "pause": pause, "stop": stop}
+        self.update_hotkey_label()
+        return True, None
+
+    def apply_hotkeys(self):
+        old = dict(self.hotkey_current)
+
+        new_start = self._normalize_hotkey(self.hotkey_start_var.get(), old.get("start", "F9"))
+        new_pause = self._normalize_hotkey(self.hotkey_pause_var.get(), old.get("pause", "F8"))
+        new_stop = self._normalize_hotkey(self.hotkey_stop_var.get(), old.get("stop", "F10"))
+
+        if len({new_start.lower(), new_pause.lower(), new_stop.lower()}) < 3:
+            messagebox.showwarning("快捷键冲突", "开始/暂停/停止的快捷键不能重复。")
+            self._reset_hotkey_vars(old)
+            return False
+
+        ok, err = self._set_hotkeys(new_start, new_pause, new_stop)
+        if ok:
+            return True
+
+        messagebox.showerror("快捷键设置失败", f"无法注册快捷键: {err}")
+        self._set_hotkeys(old.get("start", "F9"), old.get("pause", "F8"), old.get("stop", "F10"))
+        self._reset_hotkey_vars(old)
+        return False
 
     def load_config(self):
         if not os.path.exists(self.config_file):
@@ -196,6 +379,9 @@ class AutoSketchApp:
             self.mist_step_var.set(config.getint('迷雾设置', 'mist_step', fallback=self.mist_step_var.get()))
             # ★ 读取滚动距离配置
             self.mist_scroll_var.set(config.getint('迷雾设置', 'mist_scroll', fallback=self.mist_scroll_var.get()))
+            self.hotkey_start_var.set(config.get('快捷键', 'start', fallback=self.hotkey_start_var.get()))
+            self.hotkey_pause_var.set(config.get('快捷键', 'pause', fallback=self.hotkey_pause_var.get()))
+            self.hotkey_stop_var.set(config.get('快捷键', 'stop', fallback=self.hotkey_stop_var.get()))
         except Exception as e:
             print(f"配置文件读取有误: {e}")
 
@@ -219,13 +405,17 @@ drag_step = 5
 delay = 0.02
 mouse_btn = right
 auto_align = True
+[快捷键]
+start = F9
+pause = F8
+stop = F10
+
 
 [迷雾设置]
 mist_margin = 40
 mist_spacing = 3
 mist_step = 20
-mist_scroll = 1200
-"""
+mist_scroll = 1200"""
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 f.write(default_content)
@@ -252,13 +442,17 @@ drag_step = {self.drag_step_var.get()}
 delay = {self.delay_var.get()}
 mouse_btn = {self.btn_var.get()}
 auto_align = {self.auto_align_var.get()}
+[快捷键]
+start = {self.hotkey_current.get("start", "F9")}
+pause = {self.hotkey_current.get("pause", "F8")}
+stop = {self.hotkey_current.get("stop", "F10")}
+
 
 [迷雾设置]
 mist_margin = {self.mist_margin_var.get()}
 mist_spacing = {self.mist_spacing_var.get()}
 mist_step = {self.mist_step_var.get()}
-mist_scroll = {self.mist_scroll_var.get()}
-"""
+mist_scroll = {self.mist_scroll_var.get()}"""
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 f.write(content)
@@ -406,7 +600,7 @@ mist_scroll = {self.mist_scroll_var.get()}
             self.is_running = True
             self.is_paused = False
             self.stop_requested = False
-            self.status_label.config(text="迷雾战场启动中! (F10停止)", foreground="red")
+            self.status_label.config(text=f"迷雾战场启动中! ({self._hk('stop', 'F10')}停止)", foreground="red")
             threading.Thread(target=self.mist_mode_task, daemon=True).start()
 
     def mist_mode_task(self):
@@ -439,7 +633,7 @@ mist_scroll = {self.mist_scroll_var.get()}
                 old_rel_x = ax - box_x
                 old_rel_y = ay - box_y
 
-            self.root.after(0, lambda: self.status_label.config(text="迷雾战场: 已暂停 (按F8继续)", foreground="purple"))
+            self.root.after(0, lambda: self.status_label.config(text=f"迷雾战场: 已暂停 (按{self._hk('pause', 'F8')}继续)", foreground="purple"))
             
             while self.is_paused and not self.stop_requested:
                 time.sleep(0.1)
@@ -494,7 +688,7 @@ mist_scroll = {self.mist_scroll_var.get()}
                         pyautogui.mouseUp(button='left')
                         time.sleep(0.3) 
                 else:
-                    self.root.after(0, lambda: messagebox.showwarning("对齐失败", "未能找回原位置，迷雾涂抹可能会出现少许遗漏！"))
+                    messagebox.showwarning("对齐失败", "未能找回原位置，迷雾涂抹可能会出现少许遗漏！")
 
             self.root.after(0, lambda: self.status_label.config(text="迷雾战场: 正在全屏极致遮盖...", foreground="red"))
             
@@ -662,7 +856,10 @@ mist_scroll = {self.mist_scroll_var.get()}
         self.is_running = True
         self.is_paused = False
         self.stop_requested = False
-        self.status_label.config(text="正在作画中! (F8暂停 | F10停止)", foreground="red")
+        self.status_label.config(
+            text=f"正在作画中! ({self._hk('pause', 'F8')}暂停 | {self._hk('stop', 'F10')}停止)",
+            foreground="red"
+        )
         threading.Thread(target=self.draw_task, daemon=True).start()
 
     def draw_task(self):
@@ -710,7 +907,7 @@ mist_scroll = {self.mist_scroll_var.get()}
                 old_rel_x = ax - box_x
                 old_rel_y = ay - box_y
 
-            self.root.after(0, lambda: self.status_label.config(text="当前状态: 已暂停 (按F8继续)", foreground="purple"))
+            self.root.after(0, lambda: self.status_label.config(text=f"当前状态: 已暂停 (按{self._hk('pause', 'F8')}继续)", foreground="purple"))
             
             while self.is_paused and not self.stop_requested:
                 time.sleep(0.1)
@@ -770,9 +967,15 @@ mist_scroll = {self.mist_scroll_var.get()}
                     self.global_offset_x += dx
                     self.global_offset_y += dy
                 else:
-                    self.root.after(0, lambda: messagebox.showwarning("对齐失败", "滚动搜索未能找回原位置，将在当前位置继续强行绘制。"))
+                    messagebox.showwarning("对齐失败", "滚动搜索未能找回原位置，将在当前位置继续强行绘制。")
             
-            self.root.after(0, lambda: self.status_label.config(text="正在作画中! (F8暂停 | F10停止)", foreground="red"))
+            self.root.after(
+                0,
+                lambda: self.status_label.config(
+                    text=f"正在作画中! ({self._hk('pause', 'F8')}暂停 | {self._hk('stop', 'F10')}停止)",
+                    foreground="red"
+                )
+            )
             
             delta_x = self.global_offset_x - old_gx
             delta_y = self.global_offset_y - old_gy
